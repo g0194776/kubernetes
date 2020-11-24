@@ -1487,6 +1487,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	updateType := o.updateType
 
 	// if we want to kill a pod, do it now!
+	// 这里会先删除所有业务container，再删除所有的pod sandbox，当然包括如果由设置PreStop HOOK的话也需要进行执行
+	// 内部细节做得比较全，比如对杀容器前的等待时间还需要计算减去执行PreStop脚本所使用的时间等等
 	if updateType == kubetypes.SyncPodKill {
 		killPodOptions := o.killPodOptions
 		if killPodOptions == nil || killPodOptions.PodStatusFunc == nil {
@@ -1835,6 +1837,7 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 		factor = 2
 	)
 	duration := base
+	//这里集合了kubelet启动时所为自己设置的health-checker，现在来讲只有一个，就是PLEG检查
 	// Responsible for checking limits in resolv.conf
 	// The limits do not have anything to do with individual pods
 	// Since this is called in syncLoop, we don't need to call it anywhere else
@@ -1846,6 +1849,7 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 		if err := kl.runtimeState.runtimeErrors(); err != nil {
 			klog.Errorf("skipping pod synchronization - %v", err)
 			// exponential backoff
+			// 这里虽然对sleep时间做了算法计算，但是本质上其kubelet进程并不会放弃，一旦问题恢复后还是有机会再做Sync的
 			time.Sleep(duration)
 			duration = time.Duration(math.Min(float64(max), factor*float64(duration)))
 			continue
@@ -1854,6 +1858,7 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 		duration = base
 
 		kl.syncLoopMonitor.Store(kl.clock.Now())
+		// 注意，这个方法内部的逻辑不是循环，所以每次Sync后还会走最外层的for
 		if !kl.syncLoopIteration(updates, handler, syncTicker.C, housekeepingTicker.C, plegCh) {
 			break
 		}
@@ -1896,6 +1901,7 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handler SyncHandler,
 	syncCh <-chan time.Time, housekeepingCh <-chan time.Time, plegCh <-chan *pleg.PodLifecycleEvent) bool {
 	select {
+	// 从Kubernetes远程同步过来的POD事件
 	case u, open := <-configCh:
 		// Update from a config source; dispatch it to the right handler
 		// callback.
@@ -1947,6 +1953,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			// the update to ensure the internal pod cache is up-to-date.
 			kl.sourcesReady.AddSource(u.Source)
 		}
+	// 当前本机内已部署的POD与Container变更事件来源
 	case e := <-plegCh:
 		if isSyncPodWorthy(e) {
 			// PLEG event for a pod; sync it.
@@ -1961,9 +1968,12 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 
 		if e.Type == pleg.ContainerDied {
 			if containerID, ok := e.Data.(string); ok {
+				// 异步删除已经死亡的容器
+				// 除了删除容器之外，还会调用PostStop Hook(如果存在的话)，以及删除Kubelet对应Pod->Container目录下的数据文件等等
 				kl.cleanUpContainersInPod(e.ID, containerID)
 			}
 		}
+	// 由外部定时器触发，默认每1秒一次
 	case <-syncCh:
 		// Sync pods waiting for sync
 		podsToSync := kl.getPodsToSync()
@@ -1972,6 +1982,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 		}
 		klog.V(4).Infof("SyncLoop (SYNC): %d pods; %s", len(podsToSync), format.Pods(podsToSync))
 		handler.HandlePodSyncs(podsToSync)
+	// 如果设置了pod的Liveness probe，状态变更会在这里触发
 	case update := <-kl.livenessManager.Updates():
 		if update.Result == proberesults.Failure {
 			// The liveness manager detected a failure; sync the pod.
@@ -1987,13 +1998,16 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			klog.V(1).Infof("SyncLoop (container unhealthy): %q", format.Pod(pod))
 			handler.HandlePodSyncs([]*v1.Pod{pod})
 		}
+	// 由外部定时器触发，默认每2秒一次
 	case <-housekeepingCh:
+		// 确保当前kubelet所接受的所有POD来源都准备完毕
 		if !kl.sourcesReady.AllReady() {
 			// If the sources aren't ready or volume manager has not yet synced the states,
 			// skip housekeeping, as we may accidentally delete pods from unready sources.
 			klog.V(4).Infof("SyncLoop (housekeeping, skipped): sources aren't ready yet.")
 		} else {
 			klog.V(4).Infof("SyncLoop (housekeeping)")
+			//清理节点上的脏数据，比如清理孤儿POD资源工作目录，挂载的卷等等
 			if err := handler.HandlePodCleanups(); err != nil {
 				klog.Errorf("Failed cleaning pods: %v", err)
 			}
