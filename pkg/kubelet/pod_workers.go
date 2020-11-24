@@ -165,6 +165,8 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 			// Time. This ensures the worker doesn't start syncing until
 			// after the cache is at least newer than the finished time of
 			// the previous sync.
+			// 这里所等待(订阅)的最新事件，其实是来自与其Pod UID有关联的本地PLEG事件
+			// 具体的参见PLEG relist函数即可
 			status, err := p.podCache.GetNewerThan(podUID, lastSyncTime)
 			if err != nil {
 				// This is the legacy event thrown by manage pod loop
@@ -179,6 +181,8 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 				killPodOptions: update.KillPodOptions,
 				updateType:     update.UpdateType,
 			})
+			// 由于这个PodUpdates的循环读取不会退出，所以第一次触发时是直接获取的最近数据
+			// 然后，设置了这个时间。等第二次触发时就可以拿到从这个时间戳往后的最新数据了。
 			lastSyncTime = time.Now()
 			return err
 		}()
@@ -190,6 +194,9 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 			// IMPORTANT: we do not log errors here, the syncPodFn is responsible for logging errors
 			klog.Errorf("Error syncing pod %s (%q), skipping: %v", update.Pod.UID, format.Pod(update.Pod), err)
 		}
+		// 之所以能循环读取podUpdates这个Channel，主要还是因为有外部机制来向这个Channel写入数据
+		// 外部写入这个Channel数据之前会判断p.isWorking，如果返回为false则设置值并向Channel写入数据
+		// 下面这个方法就是将p.isWorking重置的，以便后续还能再在判断p.isWorking时返回false
 		p.wrapUp(update.Pod.UID, err)
 	}
 }
