@@ -1362,9 +1362,12 @@ func getPhase(spec *v1.PodSpec, info []v1.ContainerStatus) v1.PodPhase {
 func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.PodStatus) v1.PodStatus {
 	klog.V(3).Infof("Generating status for %q", format.Pod(pod))
 
+	// 将一个内部的podStatus状态对象转换成一个Kubernetes API Server能使用的远程状态对象，这里涉及到对象结构的转换
+	// 考虑到Kubernetes API Server对Pod Status的要求，这里还需要做很多额外动作，比如对Pod QoS进行计算，决定Pod IP(如果有多个IP)等等呢
 	s := kl.convertStatusToAPIStatus(pod, podStatus)
 
 	// check if an internal module has requested the pod is evicted.
+	// 使用Kubelet启动时所挂载的handler去判断当前Pod是否需要驱逐
 	for _, podSyncHandler := range kl.PodSyncHandlers {
 		if result := podSyncHandler.ShouldEvict(pod); result.Evict {
 			s.Phase = v1.PodFailed
@@ -1377,6 +1380,7 @@ func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.Po
 	// Assume info is ready to process
 	spec := &pod.Spec
 	allStatus := append(append([]v1.ContainerStatus{}, s.ContainerStatuses...), s.InitContainerStatuses...)
+	// 通过Pod下所有的Container状态来计算出当前Pod的Phase
 	s.Phase = getPhase(spec, allStatus)
 	// Check for illegal phase transition
 	if pod.Status.Phase == v1.PodFailed || pod.Status.Phase == v1.PodSucceeded {
@@ -1387,6 +1391,8 @@ func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.Po
 			s.Phase = pod.Status.Phase
 		}
 	}
+	// 注意，如下这行会修改s内部每一个容器的状态。这个计算的过程也包括了对Pod级别Readiness Probe的运行状态判断
+	// 这里并不会去刻意触发Readiness Probe，只是检查是否运行过以及是否存在这个类型的Probe等等
 	kl.probeManager.UpdatePodStatus(pod.UID, s)
 	s.Conditions = append(s.Conditions, status.GeneratePodInitializedCondition(spec, s.InitContainerStatuses, s.Phase))
 	s.Conditions = append(s.Conditions, status.GeneratePodReadyCondition(spec, s.Conditions, s.ContainerStatuses, s.Phase))

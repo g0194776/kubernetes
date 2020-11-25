@@ -197,6 +197,8 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 		// 之所以能循环读取podUpdates这个Channel，主要还是因为有外部机制来向这个Channel写入数据
 		// 外部写入这个Channel数据之前会判断p.isWorking，如果返回为false则设置值并向Channel写入数据
 		// 下面这个方法就是将p.isWorking重置的，以便后续还能再在判断p.isWorking时返回false
+		// 需要特别注意的是，无论一个Pod的处理是成功还是失败，最终都会加入到队列中去重试，因为Kubelet本身内部就在维护一个本地Pod的大队列，总是在循环检查这个队列中的Pod来处理事件等等
+		// 所以，既然无论如何都会加入到队列中去轮询工作，唯一的区别就是加回到队列中的一个时间间隔差别而已
 		p.wrapUp(update.Pod.UID, err)
 	}
 }

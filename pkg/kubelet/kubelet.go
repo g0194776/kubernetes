@@ -1515,6 +1515,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 
 	// Record pod worker start latency if being created
 	// TODO: make pod workers record their own latencies
+	// 这里和上面的firstSeenTime其实是用来做数据延迟检查的
+	// 由于在最开始的位置是N个channel共同挑选执行时机，所以这里的latency越慢越表示出其他channel的忙碌
 	if updateType == kubetypes.SyncPodCreate {
 		if !firstSeenTime.IsZero() {
 			// This is the first time we are syncing the pod. Record the latency
@@ -1527,6 +1529,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Generate final API pod status with pod and status manager status
+	// 这里的podStatus其实就是在之前managePodLoop方法内为一个Pod UID所订阅获取的最新本地状态
+	// 这个函数做了很多对象结构转换以及字段初始化的工作，比如对内部每一个容器的状态判定、设置以及Host IP的检查设置等等
 	apiPodStatus := kl.generateAPIPodStatus(pod, podStatus)
 	// The pod IP may be changed in generateAPIPodStatus if the pod is using host network. (See #24576)
 	// TODO(random-liu): After writing pod spec into container labels, check whether pod is using host network, and
@@ -1548,6 +1552,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		metrics.DeprecatedPodStartLatency.Observe(metrics.SinceInMicroseconds(firstSeenTime))
 	}
 
+	// 这里是做了在Kubelet启动时所挂载的所有软检查，根据提示，软检查需要在Kubelet接受一个Pod调度后但是在运行前来执行。
+	// v1.17版本的Kubernetes挂了3个软检查，分别是: ApparmorFS, ProcMounts和NewPrivs检查(跟SecurityContext内的超管权限外逃有关系)
 	runnable := kl.canRunPod(pod)
 	if !runnable.Admit {
 		// Pod is not runnable; update the Pod and Container statuses to why.
@@ -1568,9 +1574,11 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Update status in the status manager
+	// 将状态更新到远程API Server上
 	kl.statusManager.SetPodStatus(pod, apiPodStatus)
 
 	// Kill pod if it should not be running
+	// 如果被判定为不允许部署(与软检查有关)，或者POD已经被标记删除了，又或者是Pod的状态被标记为Failed(比如应该被驱逐)等等
 	if !runnable.Admit || pod.DeletionTimestamp != nil || apiPodStatus.Phase == v1.PodFailed {
 		var syncErr error
 		if err := kl.killPod(pod, nil, podStatus, nil); err != nil {
@@ -1587,7 +1595,9 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		return syncErr
 	}
 
-	// If the network plugin is not ready, only start the pod if it uses the host network
+	// 在当前网络插件还未准备就绪的情况下，只允许部署使用host-network模式的Pod
+	// 对于在此步骤无法继续部署的Pod会记录远程事件，针对这种特殊错误，将这个Pod重新加入到Kubelet队列中的时间也会有单独判断
+	// 如想了解进一步详情，请参考pod_workers.go文件中的wrapUp()方法
 	if err := kl.runtimeState.networkErrors(); err != nil && !kubecontainer.IsHostNetworkPod(pod) {
 		kl.recorder.Eventf(pod, v1.EventTypeWarning, events.NetworkNotReady, "%s: %v", NetworkNotReadyErrorMsg, err)
 		return fmt.Errorf("%s: %v", NetworkNotReadyErrorMsg, err)
