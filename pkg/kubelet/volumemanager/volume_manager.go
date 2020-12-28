@@ -363,6 +363,7 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 		return nil
 	}
 
+	// 这里返回的是在Container Spec层面能看到的目录挂载点名称(还有挂载磁盘等)
 	expectedVolumes := getExpectedVolumes(pod)
 	if len(expectedVolumes) == 0 {
 		// No volumes to verify
@@ -370,11 +371,15 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 	}
 
 	klog.V(3).Infof("Waiting for volumes to attach and mount for pod %q", format.Pod(pod))
+	// 这里拿到的是Pod的UID
 	uniquePodName := util.GetUniquePodName(pod)
 
 	// Some pods expect to have Setup called over and over again to update.
 	// Remount plugins for which this is true. (Atomically updating volumes,
 	// like Downward API, depend on this to update the contents of the volume).
+
+	// 一些Pod希望在整个声明周期中不停的去调用Step方法来安装或更新挂载点
+	// 这里的调用其实就是在desiredStateOfWorldPopulator内部的缓存中去掉了指定的Pod UID
 	vm.desiredStateOfWorldPopulator.ReprocessPod(uniquePodName)
 
 	err := wait.PollImmediate(
@@ -383,16 +388,12 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 		vm.verifyVolumesMountedFunc(uniquePodName, expectedVolumes))
 
 	if err != nil {
-		unmountedVolumes :=
-			vm.getUnmountedVolumes(uniquePodName, expectedVolumes)
+		unmountedVolumes := vm.getUnmountedVolumes(uniquePodName, expectedVolumes)
 		// Also get unattached volumes for error message
-		unattachedVolumes :=
-			vm.getUnattachedVolumes(expectedVolumes)
-
+		unattachedVolumes := vm.getUnattachedVolumes(expectedVolumes)
 		if len(unmountedVolumes) == 0 {
 			return nil
 		}
-
 		return fmt.Errorf(
 			"unmounted volumes=%v, unattached volumes=%v: %s",
 			unmountedVolumes,

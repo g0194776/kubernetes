@@ -157,6 +157,9 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 		return resp, nil
 	}
 
+	//截止到上面，如果Pod Spec中不是需要hostNetwork，那上面创建并已经启动的Sandbox network mode是"None"
+	//接下来，将会进一步通过CNI完成Sandbox的容器网络配置
+
 	// Step 5: Setup networking for the sandbox.
 	// All pod networking is setup by a CNI plugin discovered at startup time.
 	// This plugin assigns the pod ip, sets up routes inside the sandbox,
@@ -593,8 +596,8 @@ func (ds *dockerService) applySandboxLinuxOptions(hc *dockercontainer.HostConfig
 
 func (ds *dockerService) applySandboxResources(hc *dockercontainer.HostConfig, lc *runtimeapi.LinuxPodSandboxConfig) error {
 	hc.Resources = dockercontainer.Resources{
-		MemorySwap: DefaultMemorySwap(),
-		CPUShares:  defaultSandboxCPUshares,
+		MemorySwap: DefaultMemorySwap(),     //value=0
+		CPUShares:  defaultSandboxCPUshares, //value=2
 		// Use docker's default cpu quota/period.
 	}
 
@@ -634,19 +637,22 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 
 	// Apply linux-specific options.
+	// 这个方法内分别设置了dockerConfig里面的HostConfig, Config, 以及NetworkingConfig这三个字段的值
 	if err := ds.applySandboxLinuxOptions(hc, c.GetLinux(), createConfig, image, securityOptSeparator); err != nil {
 		return nil, err
 	}
 
 	// Set port mappings.
+	//这里返回的数据只收集了portMapping中所有设置了HostPort的外部端口
 	exposedPorts, portBindings := makePortsAndBindings(c.GetPortMappings())
 	createConfig.Config.ExposedPorts = exposedPorts
 	hc.PortBindings = portBindings
 
 	// TODO: Get rid of the dependency on kubelet internal package.
-	hc.OomScoreAdj = qos.PodInfraOOMAdj
+	hc.OomScoreAdj = qos.PodInfraOOMAdj //-998
 
 	// Apply resource options.
+	// 这里设置了hc内部的Resource对象
 	if err := ds.applySandboxResources(hc, c.GetLinux()); err != nil {
 		return nil, err
 	}

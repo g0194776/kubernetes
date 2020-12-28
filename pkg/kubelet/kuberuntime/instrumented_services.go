@@ -185,6 +185,9 @@ func (in instrumentedRuntimeService) RunPodSandbox(config *runtimeapi.PodSandbox
 	defer recordOperation(operation, startTime)
 	defer metrics.RunPodSandboxDuration.WithLabelValues(runtimeHandler).Observe(metrics.SinceInSeconds(startTime))
 
+	//调用内部所支持的gRPC接口
+	//gRPC接口的服务器端实现在"dockerService.RunPodSandbox"中
+	//source: k8s.io/kubernetes/pkg/kubelet/dockershim/docker_sandbox.go
 	out, err := in.service.RunPodSandbox(config, runtimeHandler)
 	recordError(operation, err)
 	if err != nil {

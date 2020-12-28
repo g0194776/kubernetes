@@ -46,11 +46,13 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 		}
 	}
 
+	//在这里会影响config.User值的设置
 	err := modifyContainerConfig(sc, config)
 	if err != nil {
 		return err
 	}
 
+	//在这里会根据sc的设置分别影响hc(HostConfig)对象的多个字段取值
 	if err := modifyHostConfig(sc, hc, separator); err != nil {
 		return err
 	}
@@ -173,6 +175,8 @@ func modifyHostOptionsForSandbox(nsOpts *runtimeapi.NamespaceOption, network *kn
 	if nsOpts.GetIpc() == runtimeapi.NamespaceMode_NODE {
 		hc.IpcMode = namespaceModeHost
 	}
+	//除了需要主机网络配置的Pod设置之外，大多数这里nsOpts.GetNetwork()返回的结果是 runtimeapi.NamespaceMode_POD
+	//相关赋值逻辑在这里: k8s.io/kubernetes/pkg/kubelet/kuberuntime/helpers.go:namespacesForPod
 	if nsOpts.GetNetwork() == runtimeapi.NamespaceMode_NODE {
 		hc.NetworkMode = namespaceModeHost
 		return

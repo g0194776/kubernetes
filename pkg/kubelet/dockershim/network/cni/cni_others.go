@@ -69,6 +69,7 @@ func (plugin *cniNetworkPlugin) GetPodNetworkStatus(namespace string, name strin
 		return nil, fmt.Errorf("cannot find the network namespace, skipping pod network status for container %q", id)
 	}
 
+	//通过netns地址去取容器内eth0网卡设备的IP
 	ips, err := network.GetPodIPs(plugin.execer, plugin.nsenterPath, netnsPath, network.DefaultInterfaceName)
 	if err != nil {
 		return nil, err

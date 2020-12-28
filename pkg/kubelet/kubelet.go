@@ -1613,9 +1613,14 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// flag enabled, all the pod's running containers
 		// should be killed intermittently and brought back up
 		// under the qos cgroup hierarchy.
+
 		// Check if this is the pod's first sync
+
+		// --cgroups-per-qos 这个参数是默认开启的，解释如下:
+		// Enable creation of QoS cgroup hierarchy, if true top level QoS and pod cgroups are created. (default true)
 		firstSync := true
 		for _, containerStatus := range apiPodStatus.ContainerStatuses {
+			//如果目标Pod下的容器已经在运行
 			if containerStatus.State.Running != nil {
 				firstSync = false
 				break
@@ -1623,6 +1628,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		}
 		// Don't kill containers in pod if pod's cgroups already
 		// exists or the pod is running for the first time
+
+		// 如果Pod的cgroups已经存在或者Pod在这里是第一次运行，则跳过重启Pod的环节
 		podKilled := false
 		if !pcm.Exists(pod) && !firstSync {
 			if err := kl.killPod(pod, nil, podStatus, nil); err == nil {
@@ -1681,6 +1688,10 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Make data directories for the pod
+	// 在kubelet工作目录下为Pod创建子目录，比如:
+	// - /var/lib/kubelet/pods/xxx-xxx-xxx-xxx
+	// - /var/lib/kubelet/pods/xxx-xxx-xxx-xxx/volumes
+	// - /var/lib/kubelet/pods/xxx-xxx-xxx-xxx/plugins
 	if err := kl.makePodDataDirs(pod); err != nil {
 		kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToMakePodDataDirectories, "error making pod data directories: %v", err)
 		klog.Errorf("Unable to make pod data directories for pod %q: %v", format.Pod(pod), err)
@@ -1688,8 +1699,11 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Volume manager will not mount volumes for terminated pods
+	// 在Pod不是被停止的状态下，对Pod所需求的Attach和Mount进行准备
 	if !kl.podIsTerminated(pod) {
 		// Wait for volumes to attach/mount
+		// 这里不涉及到真实去Mount的行为，只是在等待而已
+		// 估计是考虑到当前的Pod可能处于运行的状态，所以应该由其他协程去做真实动作
 		if err := kl.volumeManager.WaitForAttachAndMount(pod); err != nil {
 			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedMountVolume, "Unable to attach or mount volumes: %v", err)
 			klog.Errorf("Unable to attach or mount volumes for pod %q: %v; skipping pod", format.Pod(pod), err)
@@ -1698,6 +1712,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Fetch the pull secrets for the pod
+	// 这里是真实从远程集群中去获取Pod Spec下所关联的Image Pull Secrets.
+	// 从内部实现来看，即便获取失败了也没关系。这里不应该返回个error后续再重试吗?
 	pullSecrets := kl.getPullSecretsForPod(pod)
 
 	// Call the container runtime's SyncPod callback

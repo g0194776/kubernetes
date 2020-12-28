@@ -69,6 +69,8 @@ func (m *podContainerManagerImpl) applyLimits(pod *v1.Pod) error {
 
 // Exists checks if the pod's cgroup already exists
 func (m *podContainerManagerImpl) Exists(pod *v1.Pod) bool {
+	// 给Pod计算QoS后，再按照系统cgroups Qos路径拼接Pod的UID信息，来形成一个总体路径，比如这样:
+	// /sys/fs/cgroup/memory/kubepods/burstable/pod399b3cff-259e-11eb-a6a0-00155d7b6d57
 	podContainerName, _ := m.GetPodContainerName(pod)
 	return m.cgroupManager.Exists(podContainerName)
 }

@@ -94,6 +94,7 @@ func (m *imageManager) EnsureImageExists(pod *v1.Pod, container *v1.Container, p
 	}
 
 	// If the image contains no tag or digest, a default tag should be applied.
+	// 这里就是判断下预期的镜像是否有tag或者digest，如果都没有就在最后追加一个latest tag
 	image, err := applyDefaultImageTag(container.Image)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to apply default image tag %q: %v", container.Image, err)

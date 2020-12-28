@@ -301,22 +301,24 @@ func (plugin *cniNetworkPlugin) SetUpPod(namespace string, name string, id kubec
 	if err := plugin.checkInitialized(); err != nil {
 		return err
 	}
+	//这里获取到的其实是/proc目录下指定进程的netns路径，比如这样: "/proc/60/ns/net"
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if err != nil {
 		return fmt.Errorf("CNI failed to retrieve network namespace path: %v", err)
 	}
 
 	// Todo get the timeout from parent ctx
-	cniTimeoutCtx, cancelFunc := context.WithTimeout(context.Background(), network.CNITimeoutSec*time.Second)
+	cniTimeoutCtx, cancelFunc := context.WithTimeout(context.Background(), network.CNITimeoutSec*time.Second /*220 seconds*/)
 	defer cancelFunc()
 	// Windows doesn't have loNetwork. It comes only with Linux
+	//plugin.loNetwork被初始化为: "cni-loopback"
 	if plugin.loNetwork != nil {
-		if _, err = plugin.addToNetwork(cniTimeoutCtx, plugin.loNetwork, name, namespace, id, netnsPath, annotations, options); err != nil {
+		if _, err = plugin.addToNetwork(cniTimeoutCtx, plugin.loNetwork, name /*pod name*/, namespace /*pod ns*/, id /*sandbox container id*/, netnsPath, annotations, options /*including pod's DNS config only*/); err != nil {
 			return err
 		}
 	}
 
-	_, err = plugin.addToNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name, namespace, id, netnsPath, annotations, options)
+	_, err = plugin.addToNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name /*pod name*/, namespace /*pod ns*/, id /*sandbox container id*/, netnsPath, annotations, options /*including pod's DNS config only*/)
 	return err
 }
 
@@ -446,6 +448,7 @@ func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string
 	}
 
 	// Set the PodCIDR
+	// 这里设置的plugin.podCidr来自于获取到的当前节点(Node)被分配的Pod CIDR
 	rt.CapabilityArgs[ipRangesCapability] = [][]cniIPRange{{{Subnet: plugin.podCidr}}}
 
 	// Set dns capability args.

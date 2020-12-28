@@ -35,6 +35,12 @@ import (
 
 // createPodSandbox creates a pod sandbox and returns (podSandBoxID, message, error).
 func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32) (string, string, error) {
+	//这里开始为Sandbox生成配置，包括:
+	//      - 元数据配置，名字/Label/Sandbox级别日志路径等等
+	//      - DNS配置(来自kubelet的配置以及Pod的DNSPolicy)
+	//      - 需要开放的端口集合(来自Container所声明的端口)
+	//      - CGroup路径(来自Pod QoS的计算、Pod UUID以及kubelet对基础CGroup的基础路径追加等等)
+	//      - 生成底层Linux配置，主要针对的是SecurityContext以及可能的Sysctl配置等等
 	podSandboxConfig, err := m.generatePodSandboxConfig(pod, attempt)
 	if err != nil {
 		message := fmt.Sprintf("GeneratePodSandboxConfig for pod %q failed: %v", format.Pod(pod), err)
@@ -43,6 +49,7 @@ func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32
 	}
 
 	// Create pod logs directory
+	//这里计算出的是一个以"/var/log/pods"路径为开头的地址
 	err = m.osInterface.MkdirAll(podSandboxConfig.LogDirectory, 0755)
 	if err != nil {
 		message := fmt.Sprintf("Create pod log directory for pod %q failed: %v", format.Pod(pod), err)
@@ -51,6 +58,7 @@ func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32
 	}
 
 	runtimeHandler := ""
+	//如果在Kubernetes侧开启了对节点内多运行时(runtime)的支持，比如同时支持runc和runv，则在这里根据Pod Spec内所指定的Runtime来进一步配置
 	if utilfeature.DefaultFeatureGate.Enabled(features.RuntimeClass) && m.runtimeClassManager != nil {
 		runtimeHandler, err = m.runtimeClassManager.LookupRuntimeHandler(pod.Spec.RuntimeClassName)
 		if err != nil {
@@ -62,6 +70,11 @@ func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32
 		}
 	}
 
+	//这里用的装饰器模式，其实调用的是instrumentedRuntimeService.RunPodSandbox方法
+	//在instrumentedRuntimeService.RunPodSandbox内部才是真正调用CRI gRPC服务的入口起点
+	//组装instrumentedRuntimeService.RunPodSandbox内部所使用的真实"service"入口点，在组装kubelet对象时注入
+	//具体可参见kubelet.go文件中的getRuntimeAndImageServices方法
+	//其内部最终调用的gRPC服务地址是这个: "unix:///var/run/dockershim.sock"
 	podSandBoxID, err := m.runtimeService.RunPodSandbox(podSandboxConfig, runtimeHandler)
 	if err != nil {
 		message := fmt.Sprintf("CreatePodSandbox for pod %q failed: %v", format.Pod(pod), err)
@@ -69,6 +82,8 @@ func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32
 		return "", message, err
 	}
 
+	//截至到这里，Sandbox容器已经完成创建 + 启动的过程
+	//并且已经通过CNI的调用为容器内加入了网络(网络设备 + 路由规则)等等
 	return podSandBoxID, "", nil
 }
 
@@ -88,6 +103,7 @@ func (m *kubeGenericRuntimeManager) generatePodSandboxConfig(pod *v1.Pod, attemp
 		Annotations: newPodAnnotations(pod),
 	}
 
+	//通过Kubelet自身配置的DNS信息以及Pod内所配置的DNSPolicy来计算得出一个DNS的配置
 	dnsConfig, err := m.runtimeHelper.GetPodDNS(pod)
 	if err != nil {
 		return nil, err
@@ -96,6 +112,7 @@ func (m *kubeGenericRuntimeManager) generatePodSandboxConfig(pod *v1.Pod, attemp
 
 	if !kubecontainer.IsHostNetworkPod(pod) {
 		// TODO: Add domain support in new runtime interface
+		//采用Pod Spec中配置的Hostname或者Pod自己的Name来做为最终的Hostname
 		hostname, _, err := m.runtimeHelper.GeneratePodHostNameAndDomain(pod)
 		if err != nil {
 			return nil, err
@@ -103,10 +120,13 @@ func (m *kubeGenericRuntimeManager) generatePodSandboxConfig(pod *v1.Pod, attemp
 		podSandboxConfig.Hostname = hostname
 	}
 
+	//这里计算出的是一个以"/var/log/pods"路径为开头的地址
+	//此地址内保存的文件其实是/${DOCKER_WORKDIR}/containers/XX/XX-json.log文件的软连接
 	logDir := BuildPodLogsDirectory(pod.Namespace, pod.Name, pod.UID)
 	podSandboxConfig.LogDirectory = logDir
 
 	portMappings := []*runtimeapi.PortMapping{}
+	//从Pod内所有声明的Container定义中获取期望开放的Port列表
 	for _, c := range pod.Spec.Containers {
 		containerPortMappings := kubecontainer.MakePortMappings(&c)
 
@@ -128,6 +148,8 @@ func (m *kubeGenericRuntimeManager) generatePodSandboxConfig(pod *v1.Pod, attemp
 		podSandboxConfig.PortMappings = portMappings
 	}
 
+	//生成Pod级别Linux配置对象g
+	//内部生成了Pod级别的CGroup路径，并且设置了SecurityContext相关参数
 	lc, err := m.generatePodSandboxLinuxConfig(pod)
 	if err != nil {
 		return nil, err
@@ -139,6 +161,7 @@ func (m *kubeGenericRuntimeManager) generatePodSandboxConfig(pod *v1.Pod, attemp
 
 // generatePodSandboxLinuxConfig generates LinuxPodSandboxConfig from v1.Pod.
 func (m *kubeGenericRuntimeManager) generatePodSandboxLinuxConfig(pod *v1.Pod) (*runtimeapi.LinuxPodSandboxConfig, error) {
+	//根据POD设置来得出一个cgroup路径, 类似如下这样: /sys/fs/cgroup/TYPE/kubepods/QOS/pod5a0d0d09-354c-11eb-a6a0-00155d7b6d57
 	cgroupParent := m.runtimeHelper.GetPodCgroupParent(pod)
 	lc := &runtimeapi.LinuxPodSandboxConfig{
 		CgroupParent: cgroupParent,
